@@ -744,9 +744,9 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
-    await bot.delete_webhook(drop_pending_updates=True)
     runner = await start_health_server(bot)
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
         await runner.cleanup()
@@ -914,7 +914,12 @@ async def start_health_server(bot: Bot) -> web.AppRunner:
 
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv("PORT")
+        or os.getenv("APP_PORT")
+        or os.getenv("JRM_PORT")
+        or "80"
+    )
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logging.info("Health server started on port %s", port)
