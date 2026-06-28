@@ -34,9 +34,17 @@ AGES = ["13-15", "16-17", "18-20", "21-25", "26-35", "36+"]
 
 class ServerClient:
     def __init__(self, base_url: str, secret: str) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self.normalize_base_url(base_url)
         self.secret = secret
         self.validate_base_url()
+
+    def normalize_base_url(self, base_url: str) -> str:
+        value = base_url.strip().rstrip("/")
+        for suffix in ("/health", "/tester/profile"):
+            if value.lower().endswith(suffix):
+                value = value[: -len(suffix)]
+                break
+        return value.rstrip("/")
 
     def validate_base_url(self) -> None:
         lowered = self.base_url.lower()
@@ -67,7 +75,8 @@ class ServerClient:
             if exc.code == 404:
                 hint = (
                     "\nПохоже, URL неправильный. Нужна ссылка на само приложение, "
-                    "а не на dashboard/panel. Проверь, что URL + /health открывается в браузере."
+                    "а не на dashboard/panel и не ссылка с /health на конце. "
+                    "Например: https://gitr_gs3m7-bc9.d.jrnm.app"
                 )
             raise RuntimeError(f"Server returned {exc.code}: {text}{hint}") from exc
         except urllib.error.URLError as exc:
@@ -299,7 +308,7 @@ def start_search(client: ServerClient) -> None:
 
 def create_client() -> ServerClient:
     load_dotenv(BASE_DIR / ".env")
-    server_url = os.getenv("CONSOLE_SERVER_URL") or input("Публичный URL приложения, где /health пишет Bot is running: ").strip()
+    server_url = os.getenv("CONSOLE_SERVER_URL") or input("Публичный URL приложения без /health, например https://gitr_gs3m7-bc9.d.jrnm.app: ").strip()
     secret = os.getenv("TESTER_SECRET") or input("TESTER_SECRET с сервера: ").strip()
     if not server_url or not secret:
         raise RuntimeError("Нужны CONSOLE_SERVER_URL и TESTER_SECRET.")
