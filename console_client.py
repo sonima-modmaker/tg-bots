@@ -76,7 +76,20 @@ class ServerClient:
                     "SSL-сертификат хостинга не прошел проверку имени. "
                     "Повторяю запрос в тестовом режиме без проверки SSL."
                 )
-                return self.open_json(request, verify_ssl=False)
+                try:
+                    return self.open_json(request, verify_ssl=False)
+                except urllib.error.HTTPError as fallback_exc:
+                    text = fallback_exc.read().decode("utf-8", errors="replace")
+                    hint = ""
+                    if fallback_exc.code == 502:
+                        hint = (
+                            "\nСервер вернул 502 Bad Gateway. Обычно это значит, что контейнер бота "
+                            "упал или еще не запустился. Проверь логи хостинга, BOT_TOKEN, TESTER_SECRET "
+                            "и что локально не запущен второй экземпляр этого же бота."
+                        )
+                    raise RuntimeError(
+                        f"Server returned {fallback_exc.code}: {text}{hint}"
+                    ) from fallback_exc
             raise RuntimeError(f"Cannot connect to server: {exc}") from exc
 
     def open_json(self, request: urllib.request.Request, verify_ssl: bool = True) -> dict:
