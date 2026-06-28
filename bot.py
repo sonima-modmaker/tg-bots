@@ -20,6 +20,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiohttp import web
 from dotenv import load_dotenv
 
 
@@ -691,7 +692,28 @@ async def main() -> None:
     dp.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    runner = await start_health_server()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await runner.cleanup()
+
+
+async def start_health_server() -> web.AppRunner:
+    async def health(_: web.Request) -> web.Response:
+        return web.Response(text="Bot is running")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info("Health server started on port %s", port)
+    return runner
 
 
 if __name__ == "__main__":
