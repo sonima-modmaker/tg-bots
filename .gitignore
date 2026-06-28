@@ -9,3 +9,5 @@ venv/
 env/
 .idea/
 .vscode/
+*.session
+*.session-journal

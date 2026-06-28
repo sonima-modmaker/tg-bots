@@ -9,6 +9,7 @@ The project is built with **Python**, **aiogram 3**, and **SQLite**. It also inc
 - Rules confirmation on the first `/start`.
 - User profile: gender, age 13+, name, target partner, and purpose.
 - Main menu with profile info, subscription status, and reputation.
+- Active users counter in the main menu.
 - Editing separate profile fields.
 - Partner search by gender, purpose, and mutual preferences.
 - Anonymous chat between two users through the bot.
@@ -17,6 +18,7 @@ The project is built with **Python**, **aiogram 3**, and **SQLite**. It also inc
 - Partner rating: like, dislike, or skip.
 - Complaint button after chat ending.
 - Terminal test user for local testing.
+- Real Telegram tester that logs in as a user and clicks bot buttons by number.
 
 ## Tech Stack
 
@@ -115,6 +117,45 @@ End the current chat.
 
 Send a file to the Telegram partner.
 
+## Real Telegram Tester
+
+`real_tg_tester.py` is different from `console_client.py`.
+
+It logs in as a real Telegram user account, opens a real chat with the bot, receives real bot messages, and shows inline buttons as numbers.
+
+Run it:
+
+```powershell
+python real_tg_tester.py
+```
+
+Or on Windows:
+
+```powershell
+real_tg_tester.bat
+```
+
+The script asks for:
+
+- bot token or bot username;
+- `API_ID`;
+- `API_HASH`;
+- phone number.
+
+You can create `API_ID` and `API_HASH` here: [my.telegram.org/apps](https://my.telegram.org/apps).
+
+When the bot sends buttons, the tester prints them like this:
+
+```text
+1. Continue
+2. Start search
+3. Edit profile
+```
+
+Type the number and press Enter to click the button.
+
+Important: a bot token alone cannot act like a Telegram user. Telegram does not allow bots to press their own buttons or receive their own outgoing messages as a user. That is why this tester uses a real Telegram user login.
+
 ## Matching Logic
 
 A user enters the waiting queue. When another active user appears, the bot checks:
@@ -131,9 +172,11 @@ If everything is compatible, the bot creates an active chat and starts relaying 
 .
 |-- bot.py              # Main Telegram bot
 |-- console_client.py   # Terminal test user
+|-- real_tg_tester.py   # Real Telegram user tester
 |-- run_bot.py          # Launcher with token prompt
 |-- start_bot.bat       # Windows launcher for the bot
 |-- console_client.bat  # Windows launcher for the terminal client
+|-- real_tg_tester.bat  # Windows launcher for the real Telegram tester
 |-- requirements.txt    # Python dependencies
 |-- .env.example        # Example environment file
 `-- README.md

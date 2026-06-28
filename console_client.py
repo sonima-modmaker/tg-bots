@@ -24,6 +24,7 @@ from bot import (
     db,
     ensure_user,
     find_partner_for,
+    get_active_users_count,
     get_partner,
     get_profile,
     increment_reputation,
@@ -94,7 +95,7 @@ def show_profile() -> None:
         print("\nАнкета не заполнена.")
         return
 
-    print("\n=== Твоя анкета ===")
+    print("\n=== ✨ Твоя анкета ===")
     print(f"Имя: {profile.name}")
     print(f"Пол: {GENDERS.get(profile.gender, profile.gender)}")
     print(f"Возраст: {profile.age}")
@@ -102,6 +103,7 @@ def show_profile() -> None:
     print(f"Цель: {PURPOSES.get(profile.purpose, profile.purpose)}")
     print(f"Подписка: {profile.subscription}")
     print(f"Репутация: {profile.likes} лайков, {profile.dislikes} дизлайков")
+    print(f"Активно сейчас: {get_active_users_count()}")
 
 
 def edit_profile() -> None:
@@ -322,10 +324,10 @@ async def main() -> None:
             action = choose(
                 "Главное меню:",
                 [
-                    ("search", "Начать поиск"),
-                    ("edit", "Переделать информацию"),
-                    ("refresh", "Обновить анкету"),
-                    ("exit", "Выход"),
+                    ("search", "🔎 Начать поиск"),
+                    ("edit", "✏️ Переделать информацию"),
+                    ("refresh", "🔄 Обновить анкету"),
+                    ("exit", "🚪 Выход"),
                 ],
             )
             if action == "search":

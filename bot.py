@@ -196,6 +196,21 @@ def get_partner(user_id: int) -> int | None:
     return int(row["partner_id"]) if row else None
 
 
+def get_active_users_count() -> int:
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM (
+                SELECT user_id FROM waiting_queue
+                UNION
+                SELECT user_id FROM active_chats
+            )
+            """
+        ).fetchone()
+    return int(row["count"]) if row else 0
+
+
 def are_compatible(first: UserProfile, second: UserProfile) -> bool:
     if first.purpose != second.purpose:
         return False
@@ -277,11 +292,11 @@ def kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
 
 
 def rules_keyboard() -> InlineKeyboardMarkup:
-    return kb([[("Продолжить", "rules:accept")]])
+    return kb([[("✅ Продолжить", "rules:accept")]])
 
 
 def gender_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    return kb([[("Парень", f"{prefix}:male"), ("Девушка", f"{prefix}:female")]])
+    return kb([[("👨 Парень", f"{prefix}:male"), ("👩 Девушка", f"{prefix}:female")]])
 
 
 def age_keyboard(prefix: str) -> InlineKeyboardMarkup:
@@ -296,21 +311,21 @@ def age_keyboard(prefix: str) -> InlineKeyboardMarkup:
 def looking_for_keyboard(prefix: str) -> InlineKeyboardMarkup:
     return kb(
         [
-            [("Парня", f"{prefix}:male"), ("Девушку", f"{prefix}:female")],
-            [("Не важно", f"{prefix}:any")],
+            [("👨 Парня", f"{prefix}:male"), ("👩 Девушку", f"{prefix}:female")],
+            [("✨ Не важно", f"{prefix}:any")],
         ]
     )
 
 
 def purpose_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    return kb([[("Общение", f"{prefix}:chat"), ("Отношения", f"{prefix}:relationship")]])
+    return kb([[("💬 Общение", f"{prefix}:chat"), ("❤️ Отношения", f"{prefix}:relationship")]])
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return kb(
         [
-            [("Начать поиск", "search:start")],
-            [("Переделать информацию", "edit:menu")],
+            [("🔎 Начать поиск", "search:start")],
+            [("✏️ Переделать информацию", "edit:menu")],
         ]
     )
 
@@ -318,27 +333,27 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 def edit_menu_keyboard() -> InlineKeyboardMarkup:
     return kb(
         [
-            [("Пол", "edit:gender"), ("Возраст", "edit:age")],
-            [("Имя", "edit:name"), ("Кого ищешь", "edit:looking_for")],
-            [("Цель", "edit:purpose")],
-            [("Назад", "menu:show")],
+            [("👤 Пол", "edit:gender"), ("🎂 Возраст", "edit:age")],
+            [("📝 Имя", "edit:name"), ("🎯 Кого ищешь", "edit:looking_for")],
+            [("💭 Цель", "edit:purpose")],
+            [("⬅️ Назад", "menu:show")],
         ]
     )
 
 
 def chat_keyboard() -> InlineKeyboardMarkup:
-    return kb([[("Завершить чат", "chat:stop")]])
+    return kb([[("🚪 Завершить чат", "chat:stop")]])
 
 
 def rating_keyboard(partner_id: int) -> InlineKeyboardMarkup:
     return kb(
         [
             [
-                ("Лайк", f"rate:{partner_id}:like"),
-                ("Дизлайк", f"rate:{partner_id}:dislike"),
-                ("Пропустить", f"rate:{partner_id}:skip"),
+                ("👍 Лайк", f"rate:{partner_id}:like"),
+                ("👎 Дизлайк", f"rate:{partner_id}:dislike"),
+                ("⏭️ Пропустить", f"rate:{partner_id}:skip"),
             ],
-            [("Пожаловаться", f"report:{partner_id}")],
+            [("🚩 Пожаловаться", f"report:{partner_id}")],
         ]
     )
 
@@ -363,50 +378,52 @@ async def cleanup_flow_messages(bot: Bot, user_id: int, state: FSMContext) -> No
 
 
 async def ask_gender(message: Message, state: FSMContext) -> None:
-    sent = await message.answer("Выбери свой пол:", reply_markup=gender_keyboard("gender"))
+    sent = await message.answer("👤 Выбери свой пол:", reply_markup=gender_keyboard("gender"))
     await remember_message(state, sent)
     await state.set_state(ProfileFlow.gender)
 
 
 async def ask_age(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text(
-        "Выбери возраст. Боту можно пользоваться только с 13 лет:",
+        "🎂 Выбери возраст. Боту можно пользоваться только с 13 лет:",
         reply_markup=age_keyboard("age"),
     )
     await state.set_state(ProfileFlow.age)
 
 
 async def ask_name(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("Напиши имя, которое будет видно в анкете:")
+    await callback.message.edit_text("📝 Напиши имя, которое будет видно в анкете:")
     await state.set_state(ProfileFlow.name)
 
 
 async def ask_looking_for(message: Message, state: FSMContext) -> None:
-    sent = await message.answer("Кого ты ищешь?", reply_markup=looking_for_keyboard("looking"))
+    sent = await message.answer("🎯 Кого ты ищешь?", reply_markup=looking_for_keyboard("looking"))
     await remember_message(state, sent)
     await state.set_state(ProfileFlow.looking_for)
 
 
 async def ask_purpose(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text("Для чего ищешь собеседника?", reply_markup=purpose_keyboard("purpose"))
+    await callback.message.edit_text("💭 Для чего ищешь собеседника?", reply_markup=purpose_keyboard("purpose"))
     await state.set_state(ProfileFlow.purpose)
 
 
 async def send_main_menu(message: Message | CallbackQuery) -> None:
     user_id = message.from_user.id
     profile = get_profile(user_id)
+    active_count = get_active_users_count()
     if not profile_is_complete(profile):
-        text = "Анкета еще не заполнена. Нажми /start, чтобы пройти вопросы."
+        text = "📋 Анкета еще не заполнена. Нажми /start, чтобы пройти вопросы."
     else:
         text = (
-            "<b>Твоя анкета</b>\n\n"
-            f"Имя: <b>{profile.name}</b>\n"
-            f"Пол: <b>{GENDERS.get(profile.gender, profile.gender)}</b>\n"
-            f"Возраст: <b>{profile.age}</b>\n"
-            f"Ищешь: <b>{LOOKING_FOR.get(profile.looking_for, profile.looking_for)}</b>\n"
-            f"Цель: <b>{PURPOSES.get(profile.purpose, profile.purpose)}</b>\n\n"
-            f"Подписка: <b>{profile.subscription}</b>\n"
-            f"Репутация: <b>{profile.likes}</b> лайков, <b>{profile.dislikes}</b> дизлайков"
+            "✨ <b>Твоя анкета</b>\n\n"
+            f"📝 Имя: <b>{profile.name}</b>\n"
+            f"👤 Пол: <b>{GENDERS.get(profile.gender, profile.gender)}</b>\n"
+            f"🎂 Возраст: <b>{profile.age}</b>\n"
+            f"🎯 Ищешь: <b>{LOOKING_FOR.get(profile.looking_for, profile.looking_for)}</b>\n"
+            f"💭 Цель: <b>{PURPOSES.get(profile.purpose, profile.purpose)}</b>\n\n"
+            f"💎 Подписка: <b>{profile.subscription}</b>\n"
+            f"⭐ Репутация: <b>{profile.likes}</b> лайков, <b>{profile.dislikes}</b> дизлайков\n"
+            f"🟢 Активно сейчас: <b>{active_count}</b>"
         )
     markup = main_menu_keyboard() if profile_is_complete(profile) else None
     if isinstance(message, CallbackQuery):
@@ -441,13 +458,13 @@ async def start(message: Message, state: FSMContext) -> None:
         return
 
     text = (
-        "<b>Правила бота</b>\n\n"
+        "📜 <b>Правила бота</b>\n\n"
         "1. Общайся уважительно и не оскорбляй собеседников.\n"
         "2. Не отправляй спам, рекламу, угрозы и запрещенный контент.\n"
         "3. Не передавай личные данные, если не уверен в собеседнике.\n"
         "4. Пользоваться ботом можно только с 13 лет.\n"
         "5. Жалобы могут привести к ограничению доступа.\n\n"
-        "Нажимая кнопку ниже, ты подтверждаешь, что принимаешь правила."
+        "✅ Нажимая кнопку ниже, ты подтверждаешь, что принимаешь правила."
     )
     sent = await message.answer(text, reply_markup=rules_keyboard())
     await state.update_data(cleanup_message_ids=[sent.message_id])
@@ -458,7 +475,7 @@ async def start(message: Message, state: FSMContext) -> None:
 async def accept_rules(callback: CallbackQuery, state: FSMContext) -> None:
     update_user(callback.from_user.id, accepted_rules=1)
     await callback.answer()
-    await callback.message.edit_text("Отлично, начнем анкету.")
+    await callback.message.edit_text("🚀 Отлично, начнем анкету.")
     await ask_gender(callback.message, state)
 
 
@@ -510,7 +527,7 @@ async def set_purpose(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await cleanup_flow_messages(callback.bot, callback.from_user.id, state)
     await state.clear()
-    await callback.message.answer("Анкета готова.")
+    await callback.message.answer("✅ Анкета готова.")
     await send_main_menu(callback.message)
 
 
@@ -524,7 +541,7 @@ async def show_menu(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "edit:menu")
 async def edit_menu(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.edit_text("Что именно хочешь переделать?", reply_markup=edit_menu_keyboard())
+    await callback.message.edit_text("✏️ Что именно хочешь переделать?", reply_markup=edit_menu_keyboard())
 
 
 @router.callback_query(F.data.startswith("edit:"))
@@ -533,16 +550,16 @@ async def edit_field(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.update_data(editing_field=field)
     if field == "gender":
-        await callback.message.edit_text("Выбери новый пол:", reply_markup=gender_keyboard("setedit"))
+        await callback.message.edit_text("👤 Выбери новый пол:", reply_markup=gender_keyboard("setedit"))
     elif field == "age":
-        await callback.message.edit_text("Выбери новый возраст:", reply_markup=age_keyboard("setedit"))
+        await callback.message.edit_text("🎂 Выбери новый возраст:", reply_markup=age_keyboard("setedit"))
     elif field == "name":
-        await callback.message.edit_text("Напиши новое имя:")
+        await callback.message.edit_text("📝 Напиши новое имя:")
         await state.set_state(ProfileFlow.name)
     elif field == "looking_for":
-        await callback.message.edit_text("Кого теперь ищешь?", reply_markup=looking_for_keyboard("setedit"))
+        await callback.message.edit_text("🎯 Кого теперь ищешь?", reply_markup=looking_for_keyboard("setedit"))
     elif field == "purpose":
-        await callback.message.edit_text("Выбери новую цель:", reply_markup=purpose_keyboard("setedit"))
+        await callback.message.edit_text("💭 Выбери новую цель:", reply_markup=purpose_keyboard("setedit"))
 
 
 @router.callback_query(F.data.startswith("setedit:"))
@@ -563,11 +580,11 @@ async def start_search(callback: CallbackQuery, state: FSMContext) -> None:
     ensure_user(callback.from_user.id)
     profile = get_profile(callback.from_user.id)
     if not profile_is_complete(profile):
-        await callback.answer("Сначала заполни анкету", show_alert=True)
+        await callback.answer("Сначала заполни анкету 📋", show_alert=True)
         return
 
     if get_partner(callback.from_user.id):
-        await callback.answer("Ты уже в чате", show_alert=True)
+        await callback.answer("Ты уже в чате 💬", show_alert=True)
         return
 
     partner_id = find_partner_for(profile)
@@ -575,13 +592,13 @@ async def start_search(callback: CallbackQuery, state: FSMContext) -> None:
         create_chat(callback.from_user.id, partner_id)
         await callback.answer()
         await callback.message.edit_text(
-            "Собеседник найден. Вы начали беседу. Пиши сообщение, а я передам его дальше.",
+            "🎉 Собеседник найден. Вы начали беседу.\n\nПиши сообщение, а я передам его дальше.",
             reply_markup=chat_keyboard(),
         )
         await notify_user(
             callback.bot,
             partner_id,
-            "Собеседник найден. Вы начали беседу. Пиши сообщение, а я передам его дальше.",
+            "🎉 Собеседник найден. Вы начали беседу.\n\nПиши сообщение, а я передам его дальше.",
             chat_keyboard(),
         )
         return
@@ -589,8 +606,8 @@ async def start_search(callback: CallbackQuery, state: FSMContext) -> None:
     add_to_queue(callback.from_user.id)
     await callback.answer()
     await callback.message.edit_text(
-        "Ищу активного собеседника по твоей категории. Как только кто-то подойдет, я соединю вас.",
-        reply_markup=kb([[("Отменить поиск", "search:cancel")]]),
+        "🔎 Ищу активного собеседника по твоей категории.\n\nКак только кто-то подойдет, я соединю вас.",
+        reply_markup=kb([[("❌ Отменить поиск", "search:cancel")]]),
     )
 
 
@@ -607,7 +624,7 @@ async def close_chat_if_needed(bot: Bot, user_id: int, notify_partner: bool) -> 
         await notify_user(
             bot,
             partner_id,
-            "Собеседник завершил чат. Оцени общение:",
+            "🚪 Собеседник завершил чат. Оцени общение:",
             rating_keyboard(user_id),
         )
     return partner_id
@@ -619,20 +636,20 @@ async def stop_chat_callback(callback: CallbackQuery) -> None:
     await callback.answer()
     if partner_id:
         await callback.message.edit_text(
-            "Чат завершен. Оцени собеседника:",
+            "🚪 Чат завершен. Оцени собеседника:",
             reply_markup=rating_keyboard(partner_id),
         )
     else:
-        await callback.message.edit_text("Активного чата нет.", reply_markup=main_menu_keyboard())
+        await callback.message.edit_text("💤 Активного чата нет.", reply_markup=main_menu_keyboard())
 
 
 @router.message(Command("stop"))
 async def stop_chat_command(message: Message) -> None:
     partner_id = await close_chat_if_needed(message.bot, message.from_user.id, notify_partner=True)
     if partner_id:
-        await message.answer("Чат завершен. Оцени собеседника:", reply_markup=rating_keyboard(partner_id))
+        await message.answer("🚪 Чат завершен. Оцени собеседника:", reply_markup=rating_keyboard(partner_id))
     else:
-        await message.answer("Активного чата нет.")
+        await message.answer("💤 Активного чата нет.")
 
 
 @router.callback_query(F.data.startswith("rate:"))
@@ -641,12 +658,12 @@ async def rate_partner(callback: CallbackQuery) -> None:
     partner_id = int(partner_id_raw)
     if rating == "like":
         increment_reputation(partner_id, "likes")
-        text = "Спасибо, лайк засчитан."
+        text = "👍 Спасибо, лайк засчитан."
     elif rating == "dislike":
         increment_reputation(partner_id, "dislikes")
-        text = "Спасибо, дизлайк засчитан."
+        text = "👎 Спасибо, дизлайк засчитан."
     else:
-        text = "Оценка пропущена."
+        text = "⏭️ Оценка пропущена."
     await callback.answer(text)
     await callback.message.edit_text(text, reply_markup=main_menu_keyboard())
 
