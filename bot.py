@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "bot.sqlite3"
 CONSOLE_USER_LIMIT = 0
+TESTER_USER_ID = -1
 
 GENDERS = {
     "male": "Парень",
@@ -138,6 +139,21 @@ def push_console_message(user_id: int, message: str) -> None:
         )
 
 
+def fetch_console_messages(user_id: int) -> list[str]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, message FROM console_inbox WHERE user_id = ? ORDER BY id ASC",
+            (user_id,),
+        ).fetchall()
+        if rows:
+            conn.execute(
+                "DELETE FROM console_inbox WHERE id IN (%s)"
+                % ",".join("?" for _ in rows),
+                [row["id"] for row in rows],
+            )
+    return [str(row["message"]) for row in rows]
+
+
 def ensure_user(user_id: int) -> None:
     with db() as conn:
         conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
@@ -209,6 +225,26 @@ def get_active_users_count() -> int:
             """
         ).fetchone()
     return int(row["count"]) if row else 0
+
+
+def profile_to_dict(profile: UserProfile | None) -> dict[str, object]:
+    if not profile:
+        return {"complete": False}
+    return {
+        "complete": profile_is_complete(profile),
+        "user_id": profile.user_id,
+        "gender": profile.gender,
+        "age": profile.age,
+        "name": profile.name,
+        "looking_for": profile.looking_for,
+        "purpose": profile.purpose,
+        "subscription": profile.subscription,
+        "likes": profile.likes,
+        "dislikes": profile.dislikes,
+        "last_partner_id": profile.last_partner_id,
+        "active_count": get_active_users_count(),
+        "partner_id": get_partner(profile.user_id),
+    }
 
 
 def are_compatible(first: UserProfile, second: UserProfile) -> bool:
@@ -709,20 +745,172 @@ async def main() -> None:
     dp.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    runner = await start_health_server()
+    runner = await start_health_server(bot)
     try:
         await dp.start_polling(bot)
     finally:
         await runner.cleanup()
 
 
-async def start_health_server() -> web.AppRunner:
+async def start_health_server(bot: Bot) -> web.AppRunner:
     async def health(_: web.Request) -> web.Response:
         return web.Response(text="Bot is running")
+
+    def tester_secret() -> str:
+        return os.getenv("TESTER_SECRET", "")
+
+    async def read_payload(request: web.Request) -> dict[str, object]:
+        if request.can_read_body:
+            try:
+                data = await request.json()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                return {}
+        return {}
+
+    def is_authorized(request: web.Request, data: dict[str, object]) -> bool:
+        secret = tester_secret()
+        if not secret:
+            return False
+        provided = (
+            request.headers.get("X-Tester-Secret")
+            or request.query.get("secret")
+            or str(data.get("secret", ""))
+        )
+        return provided == secret
+
+    def unauthorized() -> web.Response:
+        return web.json_response(
+            {"ok": False, "error": "TESTER_SECRET is missing or incorrect"},
+            status=403,
+        )
+
+    async def tester_profile(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        if request.method == "POST":
+            ensure_user(TESTER_USER_ID)
+            allowed = {"gender", "age", "name", "looking_for", "purpose"}
+            fields = {key: data[key] for key in allowed if key in data}
+            if fields:
+                fields["accepted_rules"] = 1
+                update_user(TESTER_USER_ID, **fields)
+
+        ensure_user(TESTER_USER_ID)
+        return web.json_response(
+            {"ok": True, "profile": profile_to_dict(get_profile(TESTER_USER_ID))}
+        )
+
+    async def tester_search(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        ensure_user(TESTER_USER_ID)
+        profile = get_profile(TESTER_USER_ID)
+        if not profile_is_complete(profile):
+            return web.json_response({"ok": False, "error": "profile_incomplete"}, status=400)
+
+        partner_id = get_partner(TESTER_USER_ID)
+        if partner_id:
+            return web.json_response({"ok": True, "status": "chat", "partner_id": partner_id})
+
+        partner_id = find_partner_for(profile)
+        if partner_id:
+            create_chat(TESTER_USER_ID, partner_id)
+            await notify_user(
+                bot,
+                partner_id,
+                "🎉 Собеседник найден. Вы начали беседу.\n\nПиши сообщение, а я передам его дальше.",
+                chat_keyboard(),
+            )
+            return web.json_response({"ok": True, "status": "chat", "partner_id": partner_id})
+
+        add_to_queue(TESTER_USER_ID)
+        return web.json_response({"ok": True, "status": "waiting"})
+
+    async def tester_cancel(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+        remove_from_queue(TESTER_USER_ID)
+        return web.json_response({"ok": True})
+
+    async def tester_send(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        text = str(data.get("text", "")).strip()
+        if not text:
+            return web.json_response({"ok": False, "error": "empty_text"}, status=400)
+
+        partner_id = get_partner(TESTER_USER_ID)
+        if not partner_id:
+            return web.json_response({"ok": False, "error": "no_active_chat"}, status=400)
+
+        if is_console_user(partner_id):
+            push_console_message(partner_id, f"Собеседник: {text}")
+        else:
+            await notify_user(bot, partner_id, text)
+        return web.json_response({"ok": True})
+
+    async def tester_inbox(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        return web.json_response(
+            {
+                "ok": True,
+                "messages": fetch_console_messages(TESTER_USER_ID),
+                "partner_id": get_partner(TESTER_USER_ID),
+                "active_count": get_active_users_count(),
+            }
+        )
+
+    async def tester_stop(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        partner_id = close_chat(TESTER_USER_ID)
+        if partner_id:
+            await notify_user(
+                bot,
+                partner_id,
+                "🚪 Собеседник завершил чат. Оцени общение:",
+                rating_keyboard(TESTER_USER_ID),
+            )
+        return web.json_response({"ok": True, "partner_id": partner_id})
+
+    async def tester_rate(request: web.Request) -> web.Response:
+        data = await read_payload(request)
+        if not is_authorized(request, data):
+            return unauthorized()
+
+        partner_id = int(data.get("partner_id") or 0)
+        rating = str(data.get("rating", "skip"))
+        if partner_id and rating == "like":
+            increment_reputation(partner_id, "likes")
+        elif partner_id and rating == "dislike":
+            increment_reputation(partner_id, "dislikes")
+        return web.json_response({"ok": True})
 
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_get("/tester/profile", tester_profile)
+    app.router.add_post("/tester/profile", tester_profile)
+    app.router.add_post("/tester/search", tester_search)
+    app.router.add_post("/tester/cancel", tester_cancel)
+    app.router.add_post("/tester/send", tester_send)
+    app.router.add_get("/tester/inbox", tester_inbox)
+    app.router.add_post("/tester/stop", tester_stop)
+    app.router.add_post("/tester/rate", tester_rate)
 
     runner = web.AppRunner(app)
     await runner.setup()

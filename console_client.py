@@ -1,44 +1,101 @@
-import asyncio
-import msvcrt
+import json
 import os
+import threading
 import time
-from contextlib import suppress
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
-from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import FSInputFile
 from dotenv import load_dotenv
-
-from bot import (
-    AGES,
-    DB_PATH,
-    GENDERS,
-    LOOKING_FOR,
-    PURPOSES,
-    add_to_queue,
-    close_chat,
-    create_chat,
-    db,
-    ensure_user,
-    find_partner_for,
-    get_active_users_count,
-    get_partner,
-    get_profile,
-    increment_reputation,
-    init_db,
-    profile_is_complete,
-    push_console_message,
-    rating_keyboard,
-    remove_from_queue,
-    update_user,
-)
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CONSOLE_USER_ID = -1
+
+GENDERS = {
+    "male": "Парень",
+    "female": "Девушка",
+}
+
+LOOKING_FOR = {
+    "male": "Парня",
+    "female": "Девушку",
+    "any": "Не важно",
+}
+
+PURPOSES = {
+    "chat": "Общение",
+    "relationship": "Отношения",
+}
+
+AGES = ["13-15", "16-17", "18-20", "21-25", "26-35", "36+"]
+
+
+class ServerClient:
+    def __init__(self, base_url: str, secret: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.secret = secret
+        self.validate_base_url()
+
+    def validate_base_url(self) -> None:
+        lowered = self.base_url.lower()
+        if "/panel/" in lowered or lowered.endswith("/panel"):
+            raise RuntimeError(
+                "Ты указал ссылку на панель управления, а нужен публичный URL приложения. "
+                "Открой JustRunMy, найди URL/Domain/Endpoint приложения, где /health отвечает 'Bot is running'."
+            )
+
+    def request(self, method: str, path: str, payload: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        body = None
+        headers = {"X-Tester-Secret": self.secret}
+
+        if method == "GET":
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{urllib.parse.urlencode({'secret': self.secret})}"
+        else:
+            body = json.dumps(payload or {}).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", errors="replace")
+            hint = ""
+            if exc.code == 404:
+                hint = (
+                    "\nПохоже, URL неправильный. Нужна ссылка на само приложение, "
+                    "а не на dashboard/panel. Проверь, что URL + /health открывается в браузере."
+                )
+            raise RuntimeError(f"Server returned {exc.code}: {text}{hint}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Cannot connect to server: {exc}") from exc
+
+    def get_profile(self) -> dict:
+        return self.request("GET", "/tester/profile")["profile"]
+
+    def save_profile(self, data: dict) -> dict:
+        return self.request("POST", "/tester/profile", data)["profile"]
+
+    def search(self) -> dict:
+        return self.request("POST", "/tester/search", {})
+
+    def cancel_search(self) -> None:
+        self.request("POST", "/tester/cancel", {})
+
+    def inbox(self) -> dict:
+        return self.request("GET", "/tester/inbox")
+
+    def send(self, text: str) -> None:
+        self.request("POST", "/tester/send", {"text": text})
+
+    def stop(self) -> int | None:
+        return self.request("POST", "/tester/stop", {}).get("partner_id")
+
+    def rate(self, partner_id: int, rating: str) -> None:
+        self.request("POST", "/tester/rate", {"partner_id": partner_id, "rating": rating})
 
 
 def choose(title: str, options: list[tuple[str, str]]) -> str:
@@ -60,8 +117,8 @@ def ask_name() -> str:
         print("Имя должно быть от 2 до 32 символов.")
 
 
-def fill_profile() -> bool:
-    print("\nЗаполним тестовую анкету терминального пользователя.")
+def fill_profile(client: ServerClient) -> None:
+    print("\nЗаполним серверную тестовую анкету.")
     gender = choose("Твой пол:", [("male", "Парень"), ("female", "Девушка")])
     age = choose("Возраст, не меньше 13:", [(age, age) for age in AGES])
     name = ask_name()
@@ -73,40 +130,36 @@ def fill_profile() -> bool:
         "Для чего ищешь?",
         [("chat", "Общение"), ("relationship", "Отношения")],
     )
-
-    ensure_user(CONSOLE_USER_ID)
-    update_user(
-        CONSOLE_USER_ID,
-        gender=gender,
-        age=age,
-        name=name,
-        looking_for=looking_for,
-        purpose=purpose,
-        accepted_rules=1,
+    client.save_profile(
+        {
+            "gender": gender,
+            "age": age,
+            "name": name,
+            "looking_for": looking_for,
+            "purpose": purpose,
+        }
     )
-
-    save = choose("Сохранить анкету для следующих запусков?", [("yes", "Да"), ("no", "Нет")])
-    return save == "yes"
+    print("Анкета сохранена на сервере.")
 
 
-def show_profile() -> None:
-    profile = get_profile(CONSOLE_USER_ID)
-    if not profile_is_complete(profile):
-        print("\nАнкета не заполнена.")
+def show_profile(client: ServerClient) -> None:
+    profile = client.get_profile()
+    if not profile.get("complete"):
+        print("\nАнкета еще не заполнена.")
         return
 
-    print("\n=== ✨ Твоя анкета ===")
-    print(f"Имя: {profile.name}")
-    print(f"Пол: {GENDERS.get(profile.gender, profile.gender)}")
-    print(f"Возраст: {profile.age}")
-    print(f"Ищешь: {LOOKING_FOR.get(profile.looking_for, profile.looking_for)}")
-    print(f"Цель: {PURPOSES.get(profile.purpose, profile.purpose)}")
-    print(f"Подписка: {profile.subscription}")
-    print(f"Репутация: {profile.likes} лайков, {profile.dislikes} дизлайков")
-    print(f"Активно сейчас: {get_active_users_count()}")
+    print("\n=== ✨ Твоя серверная анкета ===")
+    print(f"Имя: {profile.get('name')}")
+    print(f"Пол: {GENDERS.get(profile.get('gender'), profile.get('gender'))}")
+    print(f"Возраст: {profile.get('age')}")
+    print(f"Ищешь: {LOOKING_FOR.get(profile.get('looking_for'), profile.get('looking_for'))}")
+    print(f"Цель: {PURPOSES.get(profile.get('purpose'), profile.get('purpose'))}")
+    print(f"Подписка: {profile.get('subscription')}")
+    print(f"Репутация: {profile.get('likes')} лайков, {profile.get('dislikes')} дизлайков")
+    print(f"Активно сейчас: {profile.get('active_count')}")
 
 
-def edit_profile() -> None:
+def edit_profile(client: ServerClient) -> None:
     field = choose(
         "Что переделать?",
         [
@@ -130,222 +183,141 @@ def edit_profile() -> None:
         value = choose("Кого ищешь?", [("male", "Парня"), ("female", "Девушку"), ("any", "Не важно")])
     else:
         value = choose("Новая цель:", [("chat", "Общение"), ("relationship", "Отношения")])
-    update_user(CONSOLE_USER_ID, **{field: value})
+    client.save_profile({field: value})
     print("Сохранено.")
 
 
-def fetch_console_messages() -> list[str]:
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT id, message FROM console_inbox WHERE user_id = ? ORDER BY id ASC",
-            (CONSOLE_USER_ID,),
-        ).fetchall()
-        if rows:
-            conn.execute(
-                "DELETE FROM console_inbox WHERE id IN (%s)"
-                % ",".join("?" for _ in rows),
-                [row["id"] for row in rows],
-            )
-    return [row["message"] for row in rows]
-
-
-async def inbox_printer(stop_event: asyncio.Event) -> None:
-    while not stop_event.is_set():
-        for message in fetch_console_messages():
-            print(f"\n{message}")
-            print("> ", end="", flush=True)
-        await asyncio.sleep(1)
-
-
-async def wait_for_match() -> bool:
-    print("\nИщу активного собеседника. Оставь это окно открытым.")
-    print("Нажми C, чтобы отменить поиск.")
-    last_dot = time.monotonic()
+def wait_for_match(client: ServerClient) -> bool:
+    print("\nИщу активного собеседника на сервере.")
+    print("Нажми Enter, чтобы проверить сразу, или введи /cancel для отмены.")
     while True:
-        if get_partner(CONSOLE_USER_ID):
+        inbox = client.inbox()
+        for message in inbox.get("messages", []):
+            print(f"\n{message}")
+        if inbox.get("partner_id"):
             print("\nСобеседник найден.")
             return True
 
-        for message in fetch_console_messages():
-            print(f"\n{message}")
-
-        if msvcrt.kbhit():
-            key = msvcrt.getwch().lower()
-            if key in {"c", "с"}:
-                remove_from_queue(CONSOLE_USER_ID)
-                print("\nПоиск отменен.")
-                return False
-
-        if time.monotonic() - last_dot >= 5:
-            print("Ищу дальше...")
-            last_dot = time.monotonic()
-        await asyncio.sleep(1)
+        command = input("Ожидание... ").strip()
+        if command == "/cancel":
+            client.cancel_search()
+            print("Поиск отменен.")
+            return False
 
 
-async def send_text_to_partner(bot: Bot, text: str) -> None:
-    partner_id = get_partner(CONSOLE_USER_ID)
-    if not partner_id:
-        print("Активного чата уже нет.")
-        return
-    if partner_id < 0:
-        push_console_message(partner_id, f"Собеседник: {text}")
-        return
-    with suppress(TelegramBadRequest, TelegramForbiddenError):
-        await bot.send_message(partner_id, text)
+def inbox_worker(client: ServerClient, stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            inbox = client.inbox()
+            for message in inbox.get("messages", []):
+                print(f"\n{message}")
+                print("> ", end="", flush=True)
+        except Exception as exc:
+            print(f"\nОшибка получения сообщений: {exc}")
+        time.sleep(1)
 
 
-async def send_file_to_partner(bot: Bot, path_raw: str) -> None:
-    partner_id = get_partner(CONSOLE_USER_ID)
-    path = Path(path_raw.strip('"')).expanduser()
-    if not partner_id:
-        print("Активного чата уже нет.")
-        return
-    if not path.exists() or not path.is_file():
-        print("Файл не найден.")
-        return
-    if partner_id < 0:
-        push_console_message(partner_id, f"Собеседник отправил файл: {path.name}")
-        return
-    with suppress(TelegramBadRequest, TelegramForbiddenError):
-        await bot.send_document(partner_id, document=FSInputFile(path))
-
-
-def rate_partner(partner_id: int) -> None:
+def rate_partner(client: ServerClient, partner_id: int) -> None:
     action = choose(
         "Оцени собеседника:",
-        [("like", "Лайк"), ("dislike", "Дизлайк"), ("skip", "Пропустить"), ("report", "Пожаловаться")],
+        [("like", "👍 Лайк"), ("dislike", "👎 Дизлайк"), ("skip", "⏭️ Пропустить"), ("report", "🚩 Пожаловаться")],
     )
-    if action == "like":
-        increment_reputation(partner_id, "likes")
-        print("Лайк засчитан.")
-    elif action == "dislike":
-        increment_reputation(partner_id, "dislikes")
-        print("Дизлайк засчитан.")
-    elif action == "report":
+    if action in {"like", "dislike", "skip"}:
+        client.rate(partner_id, action)
+    if action == "report":
         print("Жалоба принята. Пока без функции.")
     else:
-        print("Оценка пропущена.")
+        print("Готово.")
 
 
-async def chat_loop(bot: Bot) -> None:
+def chat_loop(client: ServerClient) -> None:
     print("\nВы начали беседу.")
-    print("Пиши текст и нажимай Enter. Команды: /stop, /file путь_к_файлу")
-    stop_event = asyncio.Event()
-    printer_task = asyncio.create_task(inbox_printer(stop_event))
-    try:
-        while get_partner(CONSOLE_USER_ID):
-            text = await asyncio.to_thread(input, "> ")
-            text = text.strip()
-            if not text:
-                continue
-            if text == "/stop":
-                partner_id = close_chat(CONSOLE_USER_ID)
-                if partner_id:
-                    if partner_id < 0:
-                        push_console_message(partner_id, "Собеседник завершил чат.")
-                    else:
-                        with suppress(TelegramBadRequest, TelegramForbiddenError):
-                            await bot.send_message(
-                                partner_id,
-                                "Собеседник завершил чат. Оцени общение:",
-                                reply_markup=rating_keyboard(CONSOLE_USER_ID),
-                            )
-                    print("Чат завершен.")
-                    rate_partner(partner_id)
-                break
-            if text.startswith("/file "):
-                await send_file_to_partner(bot, text.removeprefix("/file ").strip())
-                continue
-            await send_text_to_partner(bot, text)
-        if not get_partner(CONSOLE_USER_ID):
-            print("\nАктивный чат завершен.")
-    finally:
-        stop_event.set()
-        await printer_task
+    print("Пиши текст и нажимай Enter. Команды: /stop")
+    print("Файлы в серверном тестере пока не поддерживаются.")
 
-
-async def start_search(bot: Bot) -> None:
-    profile = get_profile(CONSOLE_USER_ID)
-    if not profile_is_complete(profile):
-        print("Сначала заполни анкету.")
-        return
-    if get_partner(CONSOLE_USER_ID):
-        await chat_loop(bot)
-        return
-
-    partner_id = find_partner_for(profile)
-    if partner_id:
-        create_chat(CONSOLE_USER_ID, partner_id)
-        if partner_id >= 0:
-            with suppress(TelegramBadRequest, TelegramForbiddenError):
-                await bot.send_message(
-                    partner_id,
-                    "Собеседник найден. Вы начали беседу. Пиши сообщение, а я передам его дальше.",
-                )
-        await chat_loop(bot)
-        return
-
-    add_to_queue(CONSOLE_USER_ID)
-    print("Когда пользователь из Telegram нажмет поиск и подойдет по анкете, чат начнется.")
-    if await wait_for_match():
-        await chat_loop(bot)
-
-
-def cleanup_console_user() -> None:
-    partner_id = close_chat(CONSOLE_USER_ID)
-    remove_from_queue(CONSOLE_USER_ID)
-    with db() as conn:
-        conn.execute("DELETE FROM console_inbox WHERE user_id = ?", (CONSOLE_USER_ID,))
-        conn.execute("DELETE FROM users WHERE user_id = ?", (CONSOLE_USER_ID,))
-    if partner_id:
-        print("Временная анкета удалена, активный чат закрыт.")
-
-
-async def main() -> None:
-    load_dotenv(BASE_DIR / ".env")
-    token = os.getenv("BOT_TOKEN") or input("Введи BOT_TOKEN: ").strip()
-    if not token:
-        print("Токен не введен.")
-        return
-
-    init_db()
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
-    keep_profile = profile_is_complete(get_profile(CONSOLE_USER_ID))
-    if keep_profile:
-        use_saved = choose("Нашел сохраненную терминальную анкету. Использовать?", [("yes", "Да"), ("no", "Заполнить заново")])
-        keep_profile = use_saved == "yes"
-    if not keep_profile:
-        keep_profile = fill_profile()
+    stop_event = threading.Event()
+    thread = threading.Thread(target=inbox_worker, args=(client, stop_event), daemon=True)
+    thread.start()
 
     try:
         while True:
-            show_profile()
-            action = choose(
-                "Главное меню:",
-                [
-                    ("search", "🔎 Начать поиск"),
-                    ("edit", "✏️ Переделать информацию"),
-                    ("refresh", "🔄 Обновить анкету"),
-                    ("exit", "🚪 Выход"),
-                ],
-            )
-            if action == "search":
-                await start_search(bot)
-            elif action == "edit":
-                edit_profile()
-            elif action == "refresh":
+            text = input("> ").strip()
+            if not text:
                 continue
-            else:
-                break
+            if text == "/stop":
+                partner_id = client.stop()
+                print("Чат завершен.")
+                if partner_id:
+                    rate_partner(client, int(partner_id))
+                return
+            if text.startswith("/file "):
+                print("Файлы в серверном тестере пока не поддерживаются.")
+                continue
+            try:
+                client.send(text)
+            except RuntimeError as exc:
+                print(exc)
+                return
     finally:
-        await bot.session.close()
-        if not keep_profile:
-            cleanup_console_user()
+        stop_event.set()
+        thread.join(timeout=2)
+
+
+def start_search(client: ServerClient) -> None:
+    result = client.search()
+    status = result.get("status")
+    if status == "chat":
+        chat_loop(client)
+        return
+    if status == "waiting" and wait_for_match(client):
+        chat_loop(client)
+
+
+def create_client() -> ServerClient:
+    load_dotenv(BASE_DIR / ".env")
+    server_url = os.getenv("CONSOLE_SERVER_URL") or input("Публичный URL приложения, где /health пишет Bot is running: ").strip()
+    secret = os.getenv("TESTER_SECRET") or input("TESTER_SECRET с сервера: ").strip()
+    if not server_url or not secret:
+        raise RuntimeError("Нужны CONSOLE_SERVER_URL и TESTER_SECRET.")
+    return ServerClient(server_url, secret)
+
+
+def main() -> None:
+    client = create_client()
+    profile = client.get_profile()
+    if profile.get("complete"):
+        use_saved = choose(
+            "Нашел серверную тестовую анкету. Использовать?",
+            [("yes", "Да"), ("no", "Заполнить заново")],
+        )
+        if use_saved == "no":
+            fill_profile(client)
+    else:
+        fill_profile(client)
+
+    while True:
+        show_profile(client)
+        action = choose(
+            "Главное меню:",
+            [
+                ("search", "🔎 Начать поиск"),
+                ("edit", "✏️ Переделать информацию"),
+                ("refresh", "🔄 Обновить анкету"),
+                ("exit", "🚪 Выход"),
+            ],
+        )
+        if action == "search":
+            start_search(client)
+        elif action == "edit":
+            edit_profile(client)
+        elif action == "refresh":
+            continue
+        else:
+            break
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         print("\nВыход.")

@@ -17,8 +17,7 @@ The project is built with **Python**, **aiogram 3**, and **SQLite**. It also inc
 - Chat ending flow.
 - Partner rating: like, dislike, or skip.
 - Complaint button after chat ending.
-- Terminal test user for local testing.
-- Real Telegram tester that logs in as a user and clicks bot buttons by number.
+- Server-level terminal test user for checking the hosted bot without a second Telegram account.
 
 ## Tech Stack
 
@@ -72,23 +71,37 @@ Then start the bot:
 python bot.py
 ```
 
-## Terminal Test Client
+## Server-Level Terminal Test Client
 
-The terminal client lets you test the roulette without a second Telegram account.
+The terminal client lets you test the hosted bot without a second Telegram account.
 
-1. Start the real bot in the first terminal:
+It does not log in to Telegram as a real user. Instead, it connects to private `/tester/...` endpoints on your running bot server and creates a server-side test user.
 
-```powershell
-python run_bot.py
+On the hosting panel, set an environment variable:
+
+```env
+TESTER_SECRET=any_private_password_here
 ```
 
-2. Start the test user in the second terminal:
+Then run the terminal client locally:
 
 ```powershell
 python console_client.py
 ```
 
-Or run on Windows:
+The script asks for:
+
+- server URL, for example `https://your-app.example.com`;
+- `TESTER_SECRET`.
+
+You can also put them into your local `.env`:
+
+```env
+CONSOLE_SERVER_URL=https://your-app.example.com
+TESTER_SECRET=any_private_password_here
+```
+
+On Windows:
 
 ```powershell
 console_client.bat
@@ -101,7 +114,7 @@ The terminal profile is filled by choosing numbers. After that, the terminal use
 - refresh profile;
 - exit.
 
-If the terminal user and a Telegram user match by profile settings, the bot connects them into one chat.
+If the server-side test user and a Telegram user match by profile settings, the bot connects them into one chat.
 
 Terminal chat commands:
 
@@ -111,50 +124,16 @@ Terminal chat commands:
 
 End the current chat.
 
-```text
-/file C:\path\file.txt
-```
+Files are not supported in this server-level tester yet, because the file is on your PC while the bot is running on the server.
 
-Send a file to the Telegram partner.
+## Local Bot Launch
 
-## Real Telegram Tester
-
-`real_tg_tester.py` is different from `console_client.py`.
-
-It logs in as a real Telegram user account, opens a real chat with the bot, receives real bot messages, and shows inline buttons as numbers.
-
-Run it:
+For local development, you can still run the bot directly:
 
 ```powershell
-python real_tg_tester.py
+python run_bot.py
 ```
 
-Or on Windows:
-
-```powershell
-real_tg_tester.bat
-```
-
-The script asks for:
-
-- bot token or bot username;
-- `API_ID`;
-- `API_HASH`;
-- phone number.
-
-You can create `API_ID` and `API_HASH` here: [my.telegram.org/apps](https://my.telegram.org/apps).
-
-When the bot sends buttons, the tester prints them like this:
-
-```text
-1. Continue
-2. Start search
-3. Edit profile
-```
-
-Type the number and press Enter to click the button.
-
-Important: a bot token alone cannot act like a Telegram user. Telegram does not allow bots to press their own buttons or receive their own outgoing messages as a user. That is why this tester uses a real Telegram user login.
 
 ## Matching Logic
 
@@ -171,12 +150,10 @@ If everything is compatible, the bot creates an active chat and starts relaying 
 ```text
 .
 |-- bot.py              # Main Telegram bot
-|-- console_client.py   # Terminal test user
-|-- real_tg_tester.py   # Real Telegram user tester
+|-- console_client.py   # Server-level terminal test user
 |-- run_bot.py          # Launcher with token prompt
 |-- start_bot.bat       # Windows launcher for the bot
 |-- console_client.bat  # Windows launcher for the terminal client
-|-- real_tg_tester.bat  # Windows launcher for the real Telegram tester
 |-- requirements.txt    # Python dependencies
 |-- .env.example        # Example environment file
 `-- README.md
