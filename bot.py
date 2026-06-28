@@ -756,8 +756,12 @@ async def start_health_server(bot: Bot) -> web.AppRunner:
     async def health(_: web.Request) -> web.Response:
         return web.Response(text="Bot is running")
 
-    def tester_secret() -> str:
-        return os.getenv("TESTER_SECRET") or "suka1234567890"
+    def tester_secrets() -> set[str]:
+        secrets = {"suka1234567890"}
+        env_secret = os.getenv("TESTER_SECRET")
+        if env_secret:
+            secrets.add(env_secret.strip())
+        return {secret for secret in secrets if secret}
 
     async def read_payload(request: web.Request) -> dict[str, object]:
         if request.can_read_body:
@@ -770,15 +774,12 @@ async def start_health_server(bot: Bot) -> web.AppRunner:
         return {}
 
     def is_authorized(request: web.Request, data: dict[str, object]) -> bool:
-        secret = tester_secret()
-        if not secret:
-            return False
         provided = (
             request.headers.get("X-Tester-Secret")
             or request.query.get("secret")
             or str(data.get("secret", ""))
         )
-        return provided == secret
+        return provided.strip() in tester_secrets()
 
     def unauthorized() -> web.Response:
         return web.json_response(
