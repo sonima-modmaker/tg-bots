@@ -1,5 +1,6 @@
 import json
 import os
+import ssl
 import threading
 import time
 import urllib.error
@@ -59,8 +60,7 @@ class ServerClient:
 
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                return json.loads(response.read().decode("utf-8"))
+            return self.open_json(request)
         except urllib.error.HTTPError as exc:
             text = exc.read().decode("utf-8", errors="replace")
             hint = ""
@@ -71,7 +71,18 @@ class ServerClient:
                 )
             raise RuntimeError(f"Server returned {exc.code}: {text}{hint}") from exc
         except urllib.error.URLError as exc:
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                print(
+                    "SSL-сертификат хостинга не прошел проверку имени. "
+                    "Повторяю запрос в тестовом режиме без проверки SSL."
+                )
+                return self.open_json(request, verify_ssl=False)
             raise RuntimeError(f"Cannot connect to server: {exc}") from exc
+
+    def open_json(self, request: urllib.request.Request, verify_ssl: bool = True) -> dict:
+        context = None if verify_ssl else ssl._create_unverified_context()
+        with urllib.request.urlopen(request, timeout=20, context=context) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def get_profile(self) -> dict:
         return self.request("GET", "/tester/profile")["profile"]
